@@ -26,6 +26,7 @@ parser.add_argument('--model-name', '-m', type=str,
                              'densenet121', 'densenet169', 'densenet201', 'densenet161', 'densenet264',
                              'resnet18', 'resnet34', 'resnet50', 'resnet101', 'resnet152',
                              'resnext50', 'resnext101', 'resnext101_64'])
+parser.add_argument('--ckpt-path', type=str, default='', help='Checkpoint path to load and test.')
 # Acceleration
 parser.add_argument('--ngpu', type=int, default=1, help='0 = CPU.')
 parser.add_argument('--test-bs', type=int, default=1024, help='Test batch size.')
@@ -37,6 +38,25 @@ imagenet_dir = os.environ['IMAGENET_DIR']
 imagenet_c_dir = os.environ['IMAGENET_C_DIR']
 
 # /////////////// Model Setup ///////////////
+
+class BlurPoolConv2d(torch.nn.Module):
+    def __init__(self, conv):
+        super().__init__()
+        default_filter = torch.tensor([[[[1, 2, 1], [2, 4, 2], [1, 2, 1]]]]) / 16.0
+        filt = default_filter.repeat(conv.in_channels, 1, 1, 1)
+        self.conv = conv
+        self.register_buffer('blur_filter', filt)
+
+    def forward(self, x):
+        blurred = F.conv2d(x, self.blur_filter, stride=1, padding=(1, 1),
+                           groups=self.conv.in_channels, bias=None)
+        return self.conv.forward(blurred)
+
+def apply_blurpool(mod: torch.nn.Module):
+    for (name, child) in mod.named_children():
+        if isinstance(child, torch.nn.Conv2d) and (np.max(child.stride) > 1 and child.in_channels >= 16): 
+            setattr(mod, name, BlurPoolConv2d(child))
+        else: apply_blurpool(child)
 
 if args.model_name == 'alexnet':
     net = models.AlexNet()
@@ -130,8 +150,15 @@ elif args.model_name == 'densenet264':
 
 elif args.model_name == 'resnet18':
     net = models.resnet18()
-    net.load_state_dict(model_zoo.load_url('https://download.pytorch.org/models/resnet18-5c106cde.pth',
-                                           model_dir=model_dir))
+    if args.ckpt_path != '':
+        # ffcv imagenet checkpoints have blurpool layers
+        apply_blurpool(net)
+        print('Loading checkpoint from {}'.format(args.ckpt_path))
+        net.load_state_dict(torch.load(args.ckpt_path))
+    else:
+        net.load_state_dict(model_zoo.load_url('https://download.pytorch.org/models/resnet18-5c106cde.pth',
+                                                model_dir=model_dir))
+    
 
 elif args.model_name == 'resnet34':
     net = models.resnet34()
@@ -140,8 +167,14 @@ elif args.model_name == 'resnet34':
 
 elif args.model_name == 'resnet50':
     net = models.resnet50()
-    net.load_state_dict(model_zoo.load_url('https://download.pytorch.org/models/resnet50-19c8e357.pth',
-                                           model_dir=model_dir))
+    if args.ckpt_path != '':
+        # ffcv imagenet checkpoints have blurpool layers
+        apply_blurpool(net)
+        print('Loading checkpoint from {}'.format(args.ckpt_path))
+        net.load_state_dict(torch.load(args.ckpt_path))
+    else:
+        net.load_state_dict(model_zoo.load_url('https://download.pytorch.org/models/resnet50-19c8e357.pth',
+                                            model_dir=model_dir))
 
 elif args.model_name == 'resnet101':
     net = models.resnet101()
